@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "700838936930",
+    "project_id": "btw-erp",
+    "storage_bucket": "btw-erp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:700838936930:android:442ab4ebe5b5e0c32aec3b",
+        "android_client_info": {
+          "package_name": "com.btwerp.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAzLLH57MXNHsYEQcFZNZPf-chXsmDAYHo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
