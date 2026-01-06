@@ -3,6 +3,7 @@ import { useNotifications } from '../contexts/NotificationContext';
 import { useAuth } from '../contexts/AuthContext';
 import { Bell, Check, Trash2, X } from 'lucide-react';
 import { Project } from '../types';
+import { DeepLinkTarget } from '../utils/deepLinkHandler';
 
 interface NotificationPanelProps {
   isOpen: boolean;
@@ -10,20 +11,33 @@ interface NotificationPanelProps {
   projects: Project[];
   // Allow caller to receive optional opts (e.g. { initialTab }) when selecting
   onSelectProject?: (project: Project, opts?: any) => void;
+  // Deep-link handler for navigation
+  onDeepLink?: (target: DeepLinkTarget) => void;
 }
 
-const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, projects, onSelectProject }) => {
-  const { notifications, markAsRead, markAllAsRead, clearNotifications } = useNotifications();
+const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, projects, onSelectProject, onDeepLink }) => {
+  const { notifications, markAsRead, markAllAsRead, clearNotifications, handleNotificationDeepLink } = useNotifications();
 
   const handleNotificationClick = (notification: typeof notifications[0]) => {
     // Mark as read
     markAsRead(notification.id);
     
-    // If project notification, navigate to it
+    // If we have a deep-link handler, use it
+    if (onDeepLink) {
+      handleNotificationDeepLink(notification);
+      onClose();
+      return;
+    }
+
+    // Fallback: If project notification and onSelectProject callback, use it
     if (notification.projectId && onSelectProject) {
       const project = projects.find(p => p.id === notification.projectId);
-        if (project) {
-        onSelectProject?.(project);
+      if (project) {
+        onSelectProject(project, {
+          initialTab: notification.targetTab,
+          taskId: notification.taskId,
+          meetingId: notification.meetingId,
+        });
         onClose();
       }
     }

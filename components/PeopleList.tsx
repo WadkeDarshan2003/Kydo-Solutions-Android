@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { getDoc, doc, collection, onSnapshot, Unsubscribe } from 'firebase/firestore';
 import { db } from '../services/firebaseConfig';
@@ -10,7 +10,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { CATEGORY_ORDER } from '../constants'; // Import shared order
 import { calculateTaskProgress, formatDateToIndian } from '../utils/taskUtils'; // Task progress calculation
 import { createUserInFirebase, updateUserInFirebase } from '../services/userManagementService'; // Firebase user creation
-import { updateProject } from '../services/firebaseService'; // Project updates
+import { updateProject, filterClientsForDesigner } from '../services/firebaseService'; // Project updates & client filtering
 import { getProjectFinancialRecords } from '../services/financialService'; // Financial records
 import { AvatarCircle, getInitials } from '../utils/avatarUtils'; // Avatar utilities
 
@@ -141,8 +141,13 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
       );
     }
     
+    // If current user is a designer viewing clients, filter to clients from their projects
+    if (currentUser?.role === Role.DESIGNER && roleFilter === Role.CLIENT) {
+      filtered = filterClientsForDesigner(filtered, currentUser.id, projects);
+    }
+    
     return filtered;
-  }, [users, roleFilter, currentUser]);
+  }, [users, roleFilter, currentUser, projects]);
 
   // Group Vendors by Specialty if in Vendor view
   const groupedVendors = React.useMemo(() => {

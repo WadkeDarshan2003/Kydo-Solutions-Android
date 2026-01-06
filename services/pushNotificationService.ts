@@ -3,6 +3,7 @@ import { messaging, db } from "./firebaseConfig";
 import { doc, updateDoc, arrayUnion, getDoc } from "firebase/firestore";
 import { Capacitor } from '@capacitor/core';
 import { PushNotifications } from '@capacitor/push-notifications';
+import { parseDeepLink } from "../utils/deepLinkHandler";
 
 export const requestNotificationPermission = async (userId: string): Promise<string | null> => {
   if (Capacitor.isNativePlatform()) {
@@ -94,17 +95,29 @@ export const requestNotificationPermission = async (userId: string): Promise<str
   }
 };
 
-export const onMessageListener = (addNotification?: any) =>
+export const onMessageListener = (addNotification?: any, onDeepLink?: (path: string) => void) =>
   new Promise((resolve) => {
     if (Capacitor.isNativePlatform()) {
       PushNotifications.addListener('pushNotificationReceived', (notification) => {
         console.log('Push received: ' + JSON.stringify(notification));
         if (addNotification) {
+          // Extract deep-link data from notification
+          const deepLinkPath = (notification.data as any)?.deepLinkPath || '/';
           addNotification({
             title: notification.title || 'New Notification',
             message: notification.body || '',
-            type: 'info'
+            type: 'info',
+            projectId: (notification.data as any)?.projectId,
+            taskId: (notification.data as any)?.taskId,
+            meetingId: (notification.data as any)?.meetingId,
+            targetTab: (notification.data as any)?.targetTab,
+            deepLinkPath
           });
+          
+          // Trigger deep-link callback if provided
+          if (onDeepLink && deepLinkPath && deepLinkPath !== '/') {
+            onDeepLink(deepLinkPath);
+          }
         }
         resolve(notification);
       });
@@ -118,6 +131,13 @@ export const onMessageListener = (addNotification?: any) =>
     onMessage(messaging, (payload) => {
       console.log("📬 Foreground message received:", payload);
       
+      // Extract deep-link data from payload
+      const deepLinkPath = payload.data?.deepLinkPath || payload.fcmOptions?.link || '/';
+      const projectId = payload.data?.projectId;
+      const taskId = payload.data?.taskId;
+      const meetingId = payload.data?.meetingId;
+      const targetTab = payload.data?.targetTab;
+      
       // Show browser notification even when app is in foreground
       if (Notification.permission === 'granted') {
         const notificationTitle = payload.notification?.title || 'New Notification';
@@ -128,24 +148,47 @@ export const onMessageListener = (addNotification?: any) =>
           tag: 'notification-' + Date.now(),
           requireInteraction: false,
           data: {
-            url: payload.data?.url || payload.fcmOptions?.link || '/'
+            url: deepLinkPath,
+            deepLinkPath,
+            projectId,
+            taskId,
+            meetingId,
+            targetTab
           }
         };
         
         const notification = new Notification(notificationTitle, notificationOptions);
         
-        // Handle notification click
+        // Handle notification click with deep-link support
         notification.onclick = (event) => {
           event.preventDefault();
-          const url = notificationOptions.data.url;
           window.focus();
-          if (url && url !== '/') {
-            window.location.href = url;
+          
+          // Use deep-link callback if available, otherwise fallback to URL
+          if (onDeepLink && deepLinkPath && deepLinkPath !== '/') {
+            onDeepLink(deepLinkPath);
+          } else if (deepLinkPath && deepLinkPath !== '/') {
+            window.location.href = deepLinkPath;
           }
+          
           notification.close();
         };
         
-        console.log("✅ Browser notification displayed");
+        console.log("✅ Browser notification displayed with deep-link:", deepLinkPath);
+      }
+      
+      // Add notification to app state with deep-link data
+      if (addNotification) {
+        addNotification({
+          title: payload.notification?.title || 'New Notification',
+          message: payload.notification?.body || '',
+          type: 'info',
+          projectId,
+          taskId,
+          meetingId,
+          targetTab,
+          deepLinkPath
+        });
       }
       
       resolve(payload);
@@ -167,23 +210,36 @@ const getCloudFunctionUrl = () => {
 const PUSH_FUNCTION_URL = getCloudFunctionUrl();
 
 /**
- * Sends a push notification via Cloud Function.
+ * Sends a push notification via Cloud Function with deep-link support.
+ * @param recipientId - User ID to send notification to
+ * @param title - Notification title
+ * @param body - Notification body/message
+ * @param options - Additional options including deep-link data
  */
 export const sendPushNotification = async (
   recipientId: string,
   title: string,
   body: string,
-  url?: string
+  options?: {
+    deepLinkPath?: string; // Path like /project/abc123?tab=plan
+    projectId?: string;
+    taskId?: string;
+    meetingId?: string;
+    targetTab?: 'discovery' | 'plan' | 'financials' | 'team' | 'timeline' | 'documents' | 'meetings';
+    icon?: string;
+  }
 ): Promise<void> => {
-  // console.log(`[Push Notification] To: ${recipientId}, Title: ${title}`);
-
   try {
     const payload = {
       recipientId,
       title,
       body,
-      url,
-      icon: "/icons/icon-192x192.png"
+      deepLinkPath: options?.deepLinkPath || '/',
+      projectId: options?.projectId,
+      taskId: options?.taskId,
+      meetingId: options?.meetingId,
+      targetTab: options?.targetTab,
+      icon: options?.icon || "/icons/icon-192x192.png"
     };
 
     // Call Cloud Function

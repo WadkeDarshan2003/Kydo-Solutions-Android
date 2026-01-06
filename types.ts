@@ -235,12 +235,15 @@ export interface Project {
 export interface Notification {
   id: string;
   recipientId?: string; // Optional: If null, global/system notification
-  projectId?: string; // Context
+  projectId?: string; // Context - Project ID for deep linking
   projectName?: string; // Project name for reference if projectId is set
   title: string;
   message: string;
   type: 'info' | 'success' | 'warning' | 'error';
   timestamp: Date;
   read: boolean;
-  targetTab?: string;
+  targetTab?: 'discovery' | 'plan' | 'financials' | 'team' | 'timeline' | 'documents' | 'meetings'; // Tab to open in project detail
+  taskId?: string; // Task ID for deep linking to specific task
+  meetingId?: string; // Meeting ID for deep linking to specific meeting
+  deepLinkPath?: string; // Full deep-link path (e.g., /project/abc123?tab=plan)
 }

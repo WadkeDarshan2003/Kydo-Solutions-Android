@@ -577,3 +577,26 @@ export const subscribeToClients = (callback: (clients: User[]) => void, tenantId
     }
   });
 };
+
+/**
+ * Helper function to filter clients based on designer's projects
+ * This should be called in the UI component with current projects data
+ */
+export const filterClientsForDesigner = (
+  clients: User[],
+  userId: string,
+  projects: Project[]
+): User[] => {
+  const designerProjectIds = new Set(
+    projects
+      .filter(p => p.leadDesignerId === userId || (p.teamMembers || []).includes(userId))
+      .flatMap(p => {
+        const projectClientIds = [];
+        if (p.clientId) projectClientIds.push(p.clientId);
+        if (p.clientIds) projectClientIds.push(...p.clientIds);
+        return projectClientIds;
+      })
+  );
+  
+  return clients.filter(c => designerProjectIds.has(c.id));
+};

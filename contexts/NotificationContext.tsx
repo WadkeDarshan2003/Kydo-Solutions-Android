@@ -2,12 +2,13 @@ import React, { createContext, useContext, useState, ReactNode, useEffect } from
 import { Notification, Project } from '../types';
 import { X, CheckCircle, AlertTriangle, Info, AlertCircle } from 'lucide-react';
 import { useAuth } from './AuthContext';
+import { DeepLinkTarget, parseDeepLink } from '../utils/deepLinkHandler';
 
 interface NotificationContextType {
   notifications: Notification[];
   unreadCount: number;
   addNotification: (
-    titleOrObj: string | { title: string; message: string; type?: Notification['type']; recipientId?: string; projectId?: string; projectName?: string; targetTab?: string },
+    titleOrObj: string | { title: string; message: string; type?: Notification['type']; recipientId?: string; projectId?: string; projectName?: string; targetTab?: string; taskId?: string; meetingId?: string; deepLinkPath?: string },
     message?: string,
     type?: Notification['type'],
     recipientId?: string,
@@ -18,6 +19,8 @@ interface NotificationContextType {
   markAsRead: (id: string) => void;
   markAllAsRead: () => void;
   clearNotifications: () => void;
+  setDeepLinkHandler: (handler: (target: DeepLinkTarget) => void) => void;
+  handleNotificationDeepLink: (notification: Notification) => void;
 }
 
 const NotificationContext = createContext<NotificationContextType | undefined>(undefined);
@@ -26,6 +29,7 @@ export const NotificationProvider: React.FC<{ children: ReactNode, projects?: Pr
   const { user } = useAuth();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [toasts, setToasts] = useState<Notification[]>([]);
+  const [deepLinkHandler, setDeepLinkHandler] = useState<((target: DeepLinkTarget) => void) | null>(null);
 
   // Helper: Check if user is part of a project team
   const isUserInProjectTeam = (userId: string, projectId: string): boolean => {
@@ -61,7 +65,7 @@ export const NotificationProvider: React.FC<{ children: ReactNode, projects?: Pr
   const unreadCount = visibleNotifications.filter(n => !n.read).length;
 
   const addNotification = (
-    titleOrObj: string | { title: string; message: string; type?: Notification['type']; recipientId?: string; projectId?: string; projectName?: string; targetTab?: string },
+    titleOrObj: string | { title: string; message: string; type?: Notification['type']; recipientId?: string; projectId?: string; projectName?: string; targetTab?: string; taskId?: string; meetingId?: string; deepLinkPath?: string },
     message?: string,
     type: Notification['type'] = 'info',
     recipientId?: string,
@@ -69,7 +73,7 @@ export const NotificationProvider: React.FC<{ children: ReactNode, projects?: Pr
     projectName?: string,
     targetTab?: string
   ) => {
-    let notificationData: { title: string; message: string; type?: Notification['type']; recipientId?: string; projectId?: string; projectName?: string; targetTab?: string };
+    let notificationData: { title: string; message: string; type?: Notification['type']; recipientId?: string; projectId?: string; projectName?: string; targetTab?: string; taskId?: string; meetingId?: string; deepLinkPath?: string };
 
     if (typeof titleOrObj === 'object') {
       notificationData = titleOrObj;
@@ -96,6 +100,9 @@ export const NotificationProvider: React.FC<{ children: ReactNode, projects?: Pr
       timestamp: new Date(),
       read: false,
       targetTab: notificationData.targetTab,
+      taskId: notificationData.taskId,
+      meetingId: notificationData.meetingId,
+      deepLinkPath: notificationData.deepLinkPath,
     };
     
     // Add to persistent store
@@ -153,6 +160,30 @@ export const NotificationProvider: React.FC<{ children: ReactNode, projects?: Pr
     });
   };
 
+  const handleNotificationDeepLink = (notification: Notification) => {
+    if (!deepLinkHandler) return;
+
+    // Try to parse deep-link path if available
+    if (notification.deepLinkPath) {
+      const target = parseDeepLink(notification.deepLinkPath);
+      if (target) {
+        deepLinkHandler(target);
+        return;
+      }
+    }
+
+    // Fallback: construct target from notification properties
+    const target: DeepLinkTarget = {
+      view: notification.projectId ? 'project-detail' : 'dashboard',
+      projectId: notification.projectId,
+      taskId: notification.taskId,
+      meetingId: notification.meetingId,
+      targetTab: notification.targetTab,
+    };
+
+    deepLinkHandler(target);
+  };
+
   const removeToast = (id: string) => {
     setToasts(prev => prev.filter(t => t.id !== id));
   };
@@ -164,7 +195,9 @@ export const NotificationProvider: React.FC<{ children: ReactNode, projects?: Pr
       addNotification, 
       markAsRead, 
       markAllAsRead, 
-      clearNotifications 
+      clearNotifications,
+      setDeepLinkHandler,
+      handleNotificationDeepLink
     }}>
       {children}
       

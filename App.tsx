@@ -15,6 +15,7 @@ import { subscribeToProjectTasks } from './services/projectDetailsService';
 import { requestNotificationPermission, onMessageListener } from './services/pushNotificationService';
 import { AvatarCircle } from './utils/avatarUtils';
 import { formatDateToIndian } from './utils/taskUtils';
+import { DeepLinkTarget, executeDeepLink } from './utils/deepLinkHandler';
 import { Capacitor } from '@capacitor/core';
 
 // Components
@@ -224,7 +225,7 @@ interface AppContentProps {
 function AppContent({ projects, setProjects, users, setUsers }: AppContentProps) {
 
   const { user, logout, loading: authLoading } = useAuth();
-  const { unreadCount, addNotification } = useNotifications();
+  const { unreadCount, addNotification, setDeepLinkHandler } = useNotifications();
   
   const [currentView, setCurrentView] = useState<ViewState>(() => {
     // Default clients to Projects view, others to Dashboard
@@ -245,6 +246,22 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
   const [isLoading, setIsLoading] = useState(true);
   const [realTimeTasks, setRealTimeTasks] = useState<Map<string, Task[]>>(new Map());
   const [showNotifPermissionBanner, setShowNotifPermissionBanner] = useState(false);
+
+  // Set up deep-link handler for notifications
+  useEffect(() => {
+    const handleDeepLink = (target: DeepLinkTarget) => {
+      executeDeepLink(target, {
+        setCurrentView,
+        setSelectedProject,
+        setSelectedTask,
+        setInitialProjectTab,
+        projects,
+        tasks: realTimeTasks
+      });
+    };
+
+    setDeepLinkHandler(handleDeepLink);
+  }, [projects, realTimeTasks, setDeepLinkHandler]);
 
   // Initialize push notifications
   useEffect(() => {
@@ -271,11 +288,16 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
         addNotification({
           title: notif.title,
           message: notif.message || notif.body,
-          type: 'info'
+          type: 'info',
+          projectId: notif.projectId,
+          taskId: notif.taskId,
+          meetingId: notif.meetingId,
+          targetTab: notif.targetTab,
+          deepLinkPath: notif.deepLinkPath,
         });
       }).catch(err => console.log('failed: ', err));
     }
-  }, [user]);
+  }, [user, addNotification]);
 
   const handleEnableNotifications = async () => {
     if (user) {
@@ -706,11 +728,16 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                 isOpen={isNotifOpen} 
                 onClose={() => setIsNotifOpen(false)}
                 projects={projects}
-                onSelectProject={(project, opts) => {
-                  setSelectedProject(project);
-                  setSelectedTask(null);
-                  setIsTaskOnlyView(false);
-                  setInitialProjectTab(opts?.initialTab);
+                onDeepLink={(target) => {
+                  executeDeepLink(target, {
+                    setCurrentView,
+                    setSelectedProject,
+                    setSelectedTask,
+                    setInitialProjectTab,
+                    projects,
+                    tasks: realTimeTasks
+                  });
+                  setIsNotifOpen(false);
                 }}
               />
             </div>
