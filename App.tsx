@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   LayoutDashboard, FolderKanban, Users, ShoppingBag, 
-  Palette, LogOut, Bell, Menu, X, Tag, Edit, Trash2, Settings, Shield
+  Palette, LogOut, Bell, Menu, X, Tag, Edit, Trash2, Settings, Shield, Building2
 } from 'lucide-react';
 import { IoPersonOutline } from 'react-icons/io5';
 import { MOCK_PROJECTS, MOCK_USERS } from './constants';
@@ -28,6 +28,10 @@ import NewProjectModal from './components/NewProjectModal';
 import Loader from './components/Loader';
 import RememberedDevices from './components/RememberedDevices';
 import SessionExpiryWarning from './components/SessionExpiryWarning';
+import FirmSettings from './components/FirmSettings';
+import BrandingSettings from './components/BrandingSettings';
+import { PageTitleUpdater } from './components/PageTitleUpdater';
+import { useTenantBranding } from './hooks/useTenantBranding';
 
 import { calculateProjectProgress } from './utils/taskUtils';
 
@@ -224,8 +228,9 @@ interface AppContentProps {
 
 function AppContent({ projects, setProjects, users, setUsers }: AppContentProps) {
 
-  const { user, logout, loading: authLoading } = useAuth();
+  const { user, logout, loading: authLoading, currentTenant, availableTenants } = useAuth();
   const { unreadCount, addNotification, setDeepLinkHandler } = useNotifications();
+  const { brandName, logoUrl } = useTenantBranding();
   
   const [currentView, setCurrentView] = useState<ViewState>(() => {
     // Default clients to Projects view, others to Dashboard
@@ -243,14 +248,26 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
+  const [isBrandingSettingsOpen, setIsBrandingSettingsOpen] = useState(false);
+  const [isFirmSettingsOpen, setIsFirmSettingsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [realTimeTasks, setRealTimeTasks] = useState<Map<string, Task[]>>(new Map());
   const [showNotifPermissionBanner, setShowNotifPermissionBanner] = useState(false);
+
+  // Multi-tenant firm switching state
+  const [selectedFirmId, setSelectedFirmId] = useState<string | null>(null);
 
   // --- Project Filter State ---
   const [projectNameFilter, setProjectNameFilter] = useState('');
   const [projectCategoryFilterValue, setProjectCategoryFilterValue] = useState<ProjectCategory | 'All'>('All');
   const [projectSortBy, setProjectSortBy] = useState<'name-asc' | 'name-desc' | 'progress-asc' | 'progress-desc' | 'recent-asc' | 'recent-desc'>('recent-desc');
+
+  // Sync currentTenant from AuthContext to local selectedFirmId
+  useEffect(() => {
+    if (currentTenant?.id) {
+      setSelectedFirmId(currentTenant.id);
+    }
+  }, [currentTenant?.id]);
 
   // Set up deep-link handler for notifications
   useEffect(() => {
@@ -350,6 +367,10 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
 
     setIsLoading(false); // No loading state needed, show empty immediately
 
+    // Multi-tenant admin detection and effective tenant ID
+    const isMultiTenantAdmin = user.role === Role.ADMIN && availableTenants.length > 1;
+    const effectiveTenantId = isMultiTenantAdmin && selectedFirmId ? selectedFirmId : user.tenantId;
+
     // Subscribe to projects (will be empty initially)
     let unsubscribeProjects: any;
     
@@ -363,16 +384,16 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
       
       // Sync all vendor metrics whenever projects change (except for vendors)
       if (user.role !== Role.VENDOR) {
-        syncAllVendorMetrics(user.tenantId).catch((err: any) => {
+        syncAllVendorMetrics(effectiveTenantId).catch((err: any) => {
           console.error('Failed to sync vendor metrics:', err);
         });
       }
-    }, user.tenantId);
+    }, effectiveTenantId);
 
     // Subscribe to users - combines from all role collections
     const unsubscribeUsers = subscribeToUsers((firebaseUsers) => {
       setUsers(firebaseUsers || []);
-    }, user.tenantId);
+    }, effectiveTenantId);
 
     // Also subscribe to role-specific collections for redundancy/updates
     const unsubscribeDesigners = subscribeToDesigners((designers) => {
@@ -382,7 +403,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
         const others = prev.filter(u => !newIds.has(u.id));
         return [...others, ...designers];
       });
-    }, user.tenantId);
+    }, effectiveTenantId);
 
     const unsubscribeVendors = subscribeToVendors((vendors) => {
       // Replace all vendors with the new list, ensuring no ID duplicates
@@ -391,7 +412,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
         const others = prev.filter(u => !newIds.has(u.id));
         return [...others, ...vendors];
       });
-    }, user.tenantId);
+    }, effectiveTenantId);
 
     const unsubscribeClients = subscribeToClients((clients) => {
       // Replace all clients with the new list, ensuring no ID duplicates
@@ -400,7 +421,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
         const others = prev.filter(u => !newIds.has(u.id));
         return [...others, ...clients];
       });
-    }, user.tenantId);
+    }, effectiveTenantId);
 
     // Cleanup subscriptions on unmount
     return () => {
@@ -410,7 +431,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
       unsubscribeVendors();
       unsubscribeClients();
     };
-  }, [user, setProjects, setUsers]);
+  }, [user, setProjects, setUsers, selectedFirmId]);
 
     // Apply pending deep-link after projects or realTimeTasks update
     useEffect(() => {
@@ -712,7 +733,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
         
         {/* Top Navbar */}
         {/* Added relative and z-20 to ensure dropdowns overlap sticky content in main */}
-        <header className="h-14 sm:h-20 bg-white border-b border-gray-200 flex items-center justify-between px-3 sm:px-6 relative z-20">
+        <header className="h-14 sm:h-20 bg-white border-b border-gray-200 flex items-center justify-between px-3 sm:px-6 relative z-10">
           <div className="flex items-center gap-4">
             <button onClick={() => setIsSidebarOpen(true)} className="md:hidden p-2 text-gray-500 hover:bg-gray-100 rounded-lg" title="Toggle sidebar menu">
               <Menu className="w-6 h-6" />
@@ -1092,11 +1113,12 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                   }} />}
                   
                   {currentView === 'settings' && (
-                    <div className="max-w-3xl mx-auto space-y-8 pb-12">
-                      <div>
-                        <h2 className="text-2xl font-bold text-gray-800 mb-2">Settings</h2>
-                        <p className="text-gray-600">Manage your account security and preferences</p>
-                      </div>
+                    <div className="w-full min-h-full">
+                      <div className="max-w-3xl mx-auto space-y-8 pb-12">
+                        <div>
+                          <h2 className="text-2xl font-bold text-gray-800 mb-2">Settings</h2>
+                          <p className="text-gray-600">Manage your account security and preferences</p>
+                        </div>
 
                       {/* Account Info Card */}
                       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -1125,9 +1147,56 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                         </div>
                       </div>
 
+                      {/* Branding Settings - Admin Only */}
+                      {user.role === Role.ADMIN && (
+                        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                          <div className="flex items-center justify-between mb-4">
+                            <div>
+                              <h3 className="text-lg font-bold text-gray-900">Company Branding</h3>
+                              <p className="text-sm text-gray-600">Customize your organization's brand name and logo</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setIsBrandingSettingsOpen(true)}
+                              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
+                            >
+                              <Palette className="w-4 h-4" />
+                              Edit Branding
+                            </button>
+                          </div>
+                          <div className="bg-gray-50 p-4 rounded-lg">
+                            <div className="flex items-center gap-3">
+                              <img src={logoUrl} alt={brandName} className="w-8 h-8 rounded" />
+                              <span className="font-medium text-gray-900">{brandName}</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Firm Management for Admins */}
+                      {user.role === Role.ADMIN && (
+                        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                          <div className="flex items-center justify-between mb-4">
+                            <div>
+                              <h3 className="text-lg font-bold text-gray-900">Firm Management</h3>
+                              <p className="text-sm text-gray-600">Switch between your firms and manage partnerships</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setIsFirmSettingsOpen(true)}
+                              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
+                            >
+                              <Building2 className="w-4 h-4" />
+                              Manage Firms
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Remembered Devices */}
                       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                         <RememberedDevices />
+                      </div>
                       </div>
                     </div>
                   )}
@@ -1148,8 +1217,26 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
           }}
           onSave={handleAddProject}
           initialProject={editingProject}
+          selectedFirmId={selectedFirmId}
         />
       )}
+
+      {isBrandingSettingsOpen && (
+        <BrandingSettings 
+          isOpen={isBrandingSettingsOpen}
+          onClose={() => setIsBrandingSettingsOpen(false)}
+        />
+      )}
+
+      {isFirmSettingsOpen && (
+        <FirmSettings
+          isOpen={isFirmSettingsOpen}
+          onClose={() => setIsFirmSettingsOpen(false)}
+        />
+      )}
+      
+      {/* Page title updater for tenant branding */}
+      <PageTitleUpdater />
     </div>
   );
 }

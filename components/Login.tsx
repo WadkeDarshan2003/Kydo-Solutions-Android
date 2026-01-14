@@ -96,6 +96,9 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
       
       login(userProfile);
       setError('');
+      
+      // Reload immediately with fresh tenant data and cleared cache
+      window.location.href = '/';
     } catch (err: any) {
       console.error('Firebase login error:', err);
       

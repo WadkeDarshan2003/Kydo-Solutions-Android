@@ -10,7 +10,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { CATEGORY_ORDER } from '../constants'; // Import shared order
 import { calculateTaskProgress, formatDateToIndian } from '../utils/taskUtils'; // Task progress calculation
 import { createUserInFirebase, updateUserInFirebase } from '../services/userManagementService'; // Firebase user creation
-import { updateProject, filterClientsForDesigner } from '../services/firebaseService'; // Project updates & client filtering
+import { updateProject, filterClientsForDesigner, subscribeToAvailableTenants } from '../services/firebaseService'; // Project updates & client filtering
 import { getProjectFinancialRecords } from '../services/financialService'; // Financial records
 import { AvatarCircle, getInitials } from '../utils/avatarUtils'; // Avatar utilities
 
@@ -50,6 +50,8 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
 
   // --- Collapsible Projects State ---
   const [authMethod, setAuthMethod] = useState<'email' | 'phone'>('email');
+  const [selectedTenantIds, setSelectedTenantIds] = useState<string[]>([]);
+  const [availableTenants, setAvailableTenants] = useState<any[]>([]);
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
   const [welcomeModalUser, setWelcomeModalUser] = useState<User | null>(null);
 
@@ -114,6 +116,21 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
   useEffect(() => {
     if (process.env.NODE_ENV !== 'production') console.log('💰 PeopleList financials updated:', allProjectFinancials);
   }, [allProjectFinancials]);
+
+  // Subscribe to available tenants for the current admin
+  useEffect(() => {
+    if (!currentUser || currentUser.role !== Role.ADMIN) {
+      setAvailableTenants([]);
+      return;
+    }
+
+    const unsubscribe = subscribeToAvailableTenants(currentUser.id, (tenants) => {
+      setAvailableTenants(tenants);
+      if (process.env.NODE_ENV !== 'production') console.log('🏢 Available tenants:', tenants);
+    });
+
+    return () => unsubscribe();
+  }, [currentUser]);
 
   useEffect(() => {
     if (!selectedVendor) return;
@@ -278,7 +295,10 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
         phone: newUser.phone || undefined,
         password: generatedPassword,
         authMethod: (authMethod) as 'email' | 'phone',
-        tenantId: currentUser?.tenantId
+        tenantId: currentUser?.tenantId,
+        tenantIds: (newUser.role === Role.VENDOR || newUser.role === Role.DESIGNER) && selectedTenantIds.length > 0 
+          ? selectedTenantIds 
+          : undefined
       }, currentUser?.email, adminCredentials?.password);
 
       // Create local user object with Firebase UID
@@ -291,7 +311,10 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
         specialty: newUser.specialty || undefined,
         phone: newUser.phone || undefined,
         password: generatedPassword,
-        authMethod: (authMethod) as 'email' | 'phone'
+        authMethod: (authMethod) as 'email' | 'phone',
+        tenantIds: (newUser.role === Role.VENDOR || newUser.role === Role.DESIGNER) && selectedTenantIds.length > 0 
+          ? selectedTenantIds 
+          : undefined
       };
 
       // Don't add to local state immediately - let Firebase subscription handle all users
@@ -327,6 +350,7 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
       setEditingUser(null);
       setNewUser({ role: roleFilter === 'All' ? Role.CLIENT : roleFilter });
       setShowErrors(false);
+      setSelectedTenantIds([]); // Reset selected tenants
 
       if (process.env.NODE_ENV !== 'production') {
         console.log('====== USER CREATION DEBUG ======');
@@ -536,6 +560,7 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
                     role: roleFilter === 'All' ? Role.CLIENT : roleFilter,
                     phone: '+91 '
                   });
+                  setSelectedTenantIds([]); // Reset selected tenants
                   setIsModalOpen(true);
                 }}
                 className="bg-gray-900 text-white px-4 py-2.5 md:px-4 md:py-2 rounded-lg text-base md:text-sm font-medium hover:bg-gray-800 transition-colors flex items-center gap-2"
@@ -614,6 +639,7 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
                 onClick={() => {
                   setIsModalOpen(false);
                   setEditingUser(null);
+                  setSelectedTenantIds([]); // Reset selected tenants
                 }} 
                 className="text-gray-400 hover:text-gray-600" 
                 title="Close add person dialog"
@@ -751,6 +777,33 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
                       value={newUser.specialty || ''}
                       onChange={e => setNewUser({...newUser, specialty: e.target.value})}
                     />
+                  </div>
+                )}
+
+                {/* Multi-Tenant Selection for Vendors and Designers */}
+                {(newUser.role === Role.VENDOR || newUser.role === Role.DESIGNER) && availableTenants.length > 0 && (
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-900 mb-2">Assign to Firms (Multi-Tenant)</label>
+                    <div className="space-y-2">
+                      {availableTenants.map(tenant => (
+                        <label key={tenant.id} className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={selectedTenantIds.includes(tenant.id)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedTenantIds([...selectedTenantIds, tenant.id]);
+                              } else {
+                                setSelectedTenantIds(selectedTenantIds.filter(id => id !== tenant.id));
+                              }
+                            }}
+                            className="w-4 h-4 text-gray-900 rounded border-gray-300 focus:ring-gray-900"
+                          />
+                          <span className="text-sm text-gray-700">{tenant.name || tenant.companyName || `Firm ${tenant.id.substring(0, 5)}`}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">Select one or more firms this {newUser.role?.toLowerCase()} can work with</p>
                   </div>
                 )}
               </div>

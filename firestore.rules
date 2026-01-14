@@ -18,6 +18,48 @@ service cloud.firestore {
       allow read: if request.auth != null && (request.auth.token.tenantId == resource.data.tenantId || request.auth.token.role == 'admin');
     }
     
+    // ============ VENDORS COLLECTION ============
+    // Vendors can read/write their own profile
+    // Admins can manage all vendors
+    // Vendors with multi-tenant support (tenantIds array)
+    match /vendors/{vendorId} {
+      allow create: if request.auth != null && (request.auth.uid == vendorId || request.auth.token.role == 'admin');
+      allow read: if request.auth != null && (
+        request.auth.uid == vendorId || 
+        request.auth.token.role == 'admin' ||
+        // Admin can read vendor if vendor is in their tenant
+        (request.auth.token.role == 'admin' && (
+          request.auth.token.tenantId in resource.data.tenantIds ||
+          request.auth.token.tenantId == resource.data.tenantId
+        ))
+      );
+      allow write: if request.auth != null && (
+        request.auth.uid == vendorId || 
+        request.auth.token.role == 'admin'
+      );
+    }
+    
+    // ============ DESIGNERS COLLECTION ============
+    // Designers can read/write their own profile
+    // Admins can manage all designers
+    // Designers with multi-tenant support (tenantIds array)
+    match /designers/{designerId} {
+      allow create: if request.auth != null && (request.auth.uid == designerId || request.auth.token.role == 'admin');
+      allow read: if request.auth != null && (
+        request.auth.uid == designerId || 
+        request.auth.token.role == 'admin' ||
+        // Admin can read designer if designer is in their tenant
+        (request.auth.token.role == 'admin' && (
+          request.auth.token.tenantId in resource.data.tenantIds ||
+          request.auth.token.tenantId == resource.data.tenantId
+        ))
+      );
+      allow write: if request.auth != null && (
+        request.auth.uid == designerId || 
+        request.auth.token.role == 'admin'
+      );
+    }
+    
     // ============ TENANTS COLLECTION ============
     // Allow creating tenant during admin signup and reading/updating by the admin
     match /tenants/{tenantId} {
@@ -32,9 +74,34 @@ service cloud.firestore {
     }
     
     // ============ TOP-LEVEL COLLECTIONS ============
-    // Projects, Vendors, Designers, Clients and all subcollections
-    match /projects/{document=**} {
-      allow read, write: if request.auth != null;
+    // Projects - Tenant-based access control
+    match /projects/{projectId} {
+      allow read: if request.auth != null && (
+        request.auth.token.role == 'admin' ||
+        // Admin can read if project is in their tenant
+        (request.auth.token.role == 'admin' && request.auth.token.tenantId == resource.data.tenantId) ||
+        // Vendor/Designer with multi-tenant support
+        (request.auth.token.role == 'vendor' && (
+          request.auth.token.tenantId in resource.data.get([], {}) ||
+          request.auth.token.tenantIds.size() > 0 && request.auth.token.tenantId in resource.data.tenantIds
+        )) ||
+        (request.auth.token.role == 'designer' && (
+          request.auth.token.tenantId in resource.data.get([], {}) ||
+          request.auth.token.tenantIds.size() > 0 && request.auth.token.tenantId in resource.data.tenantIds
+        ))
+      );
+      allow write: if request.auth != null && (
+        request.auth.token.role == 'admin' ||
+        request.auth.uid == resource.data.get('leadDesignerId')
+      );
+      
+      // Subcollections (tasks, finances, documents, etc.)
+      match /{subcollection=**} {
+        allow read, write: if request.auth != null && (
+          request.auth.token.role == 'admin' ||
+          request.auth.uid == get(/databases/$(database)/documents/projects/$(projectId)).data.leadDesignerId
+        );
+      }
     }
     
     match /vendors/{document=**} {
@@ -49,6 +116,7 @@ service cloud.firestore {
       allow read, write: if request.auth != null;
     }
     
+    // Financial Records - Tenant-based access
     match /financialRecords/{document=**} {
       allow read, write: if request.auth != null;
     }

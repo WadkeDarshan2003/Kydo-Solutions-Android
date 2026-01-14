@@ -6,34 +6,29 @@
     <title>Kydo Solutions</title>
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="apple-touch-icon" href="/favicon.ico" />
-    <meta name="theme-color" content="#2563eb" />
+    <meta name="theme-color" content="#2563eb" />
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-
-  <script type="importmap">
-{
-  "imports": {
-    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.555.0",
-    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
-    "react/": "https://aistudiocdn.com/react@^19.2.0/",
-    "react": "https://aistudiocdn.com/react@^19.2.0",
-    "recharts": "https://aistudiocdn.com/recharts@^3.5.1",
-    "react-dom": "https://aistudiocdn.com/react-dom@^19.2.0"
-  }
-}
-</script>
-  <script type="module" crossorigin src="/assets/index-BvOPyrqL.js"></script>
-  <link rel="modulepreload" crossorigin href="/assets/recharts-ChqU9iNE.js">
-  <link rel="modulepreload" crossorigin href="/assets/firebase-DOwtiFFk.js">
-  <link rel="stylesheet" crossorigin href="/assets/index-CjkwX1eq.css">
-</head>
+    <style>
+      /* Ensure root element is visible and fills viewport */
+      html, body, #root {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+    <script type="module" crossorigin src="/assets/index-UDQdo8qi.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/recharts-EVrsijMk.js">
+    <link rel="modulepreload" crossorigin href="/assets/firebase-CoIuEebr.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-CjkwX1eq.css">
+  </head>
   <body>
     <div id="root"></div>
-  <script>
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(err => console.log('SW failed:', err));
-    }
-  </script>
-</body>
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').catch(err => console.log('SW failed:', err));
+      }
+    </script>
+  </body>
 </html>

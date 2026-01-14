@@ -16,10 +16,27 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+
+    signingConfigs {
+        release {
+            storeFile file("../kydo-solutions.keystore")
+            storePassword "KydoSolutions@2026"
+            keyAlias "kydo-solutions"
+            keyPassword "KydoSolutions@2026"
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    applicationVariants.all { variant ->
+        variant.outputs.all { output ->
+            outputFileName = "Kydo Solutions.apk"
         }
     }
 }

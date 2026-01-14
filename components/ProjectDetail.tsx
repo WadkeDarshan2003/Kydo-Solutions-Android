@@ -148,7 +148,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
   // Email/Action Loading States
   const [sendingEmailFor, setSendingEmailFor] = useState<string | null>(null);
-  const [processingAction, setProcessingAction] = useState<string | null>(null);
+  const [processingActions, setProcessingActions] = useState<Set<string>>(new Set());
+
+  // Helper functions for managing concurrent actions
+  const isProcessing = (actionId: string) => processingActions.has(actionId);
+  const startProcessing = (actionId: string) => {
+    setProcessingActions(prev => new Set([...prev, actionId]));
+  };
+  const stopProcessing = (actionId: string) => {
+    setProcessingActions(prev => {
+      const newSet = new Set(prev);
+      newSet.delete(actionId);
+      return newSet;
+    });
+  };
 
 
 
@@ -620,6 +633,19 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       setIsSavingMeeting(true);
       const meetingId = await createMeeting(project.id, meeting);
       
+      // Create timeline event for meeting creation
+      await logTimelineEvent(
+        project.id,
+        `Meeting Created: ${meeting.title}`,
+        `Meeting Type: ${meeting.type}. Attendees: ${meeting.attendees.length}. Date: ${meeting.date}`,
+        'planned',
+        meeting.date,
+        meeting.date
+      ).catch((err: any) => {
+        console.error('Failed to log meeting creation timeline:', err);
+        // Don't fail the meeting creation if timeline fails
+      });
+      
       // Send meeting notification emails to attendees
       if (meeting.attendees && meeting.attendees.length > 0) {
         const attendeeUsers = projectTeam.filter(u => meeting.attendees.includes(u.id));
@@ -987,8 +1013,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         const filesToUpload: File[] = selectedFiles.length > 0 ? selectedFiles : [{ name: newDoc.name } as File];
         const createdDocIds: string[] = [];
 
-        // Upload each file
-        for (const file of filesToUpload) {
+        // PARALLEL: Upload all files simultaneously
+        const uploadPromises = filesToUpload.map(async (file, index) => {
           const fileName = file.name || newDoc.name;
           
           // Determine type
@@ -1004,7 +1030,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
           if (file instanceof File && file.size) {
             try {
               // Create a unique path for the file
-              const storagePath = `projects/${project.id}/documents/${Date.now()}_${file.name}`;
+              const storagePath = `projects/${project.id}/documents/${Date.now()}_${index}_${file.name}`;
               // Upload and get download URL
               fileUrl = await uploadFile(file, storagePath);
             } catch (uploadError) {
@@ -1030,8 +1056,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
           
           // Save to Firestore subcollection
           const createdDocId = await createDocument(project.id, doc as Omit<ProjectDocument, 'id'>);
-          createdDocIds.push(createdDocId);
-
+          
           // Convert shared IDs to names for timeline
           const sharedNames = newDoc.sharedWith.length > 0 
             ? newDoc.sharedWith.map(id => {
@@ -1041,17 +1066,23 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
               }).join(', ')
             : 'Admin, Designer, Client';
 
-          // Log timeline event
+          // Log timeline event (parallel, don't await)
           const now = new Date().toISOString();
-          await logTimelineEvent(
+          logTimelineEvent(
             project.id,
             `Document Uploaded: ${fileName}`,
             `${fileName} (${docType}) uploaded by ${user.name}. Shared with: ${sharedNames}`,
             'completed',
             now,
             now
-          );
-        }
+          ).catch(err => console.error('Timeline logging failed:', err));
+
+          return { createdDocId, doc, fileName };
+        });
+
+        // Wait for all uploads and saves to complete
+        const uploadResults = await Promise.all(uploadPromises);
+        uploadResults.forEach(result => createdDocIds.push(result.createdDocId));
 
         // If attaching to a task, update the task with all document IDs
         if (newDoc.attachToTaskId && createdDocIds.length > 0) {
@@ -1065,11 +1096,11 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
             if (newDocIds.length > 0) {
               const updatedDocArray = [...taskDocs, ...newDocIds];
               
-              // Update Firestore
-              await updateTask(project.id, targetTask.id, {
+              // Update Firestore (fire and forget, don't await)
+              updateTask(project.id, targetTask.id, {
                 ...targetTask,
                 documents: updatedDocArray
-              });
+              }).catch(err => console.error('Task update failed:', err));
               
               // Sync editingTask state if it's the same task
               if (editingTask?.id === targetTask.id) {
@@ -1097,18 +1128,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
             activityLog: [log, ...(project.activityLog || [])]
         });
         
-        // Send notifications to shared users
-        for (let i = 0; i < createdDocIds.length; i++) {
-          const doc = {
-            id: createdDocIds[i],
-            name: selectedFiles[i]?.name || newDoc.name,
-            type: newDoc.type,
-            url: '',
-            uploadedBy: user.id,
-            uploadDate: new Date().toISOString(),
-            sharedWith: newDoc.sharedWith.length > 0 ? newDoc.sharedWith : [Role.ADMIN, Role.DESIGNER, Role.CLIENT],
-            approvalStatus: 'pending' as const
-          };
+        // PARALLEL: Send notifications to all shared users simultaneously
+        const notificationPromises = uploadResults.map(async (result) => {
+          const doc = result.doc;
+          doc.id = result.createdDocId;
 
           // Get recipients - admins and users in sharedWith
           const recipients: User[] = [];
@@ -1128,15 +1151,19 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
           );
           
           if (uniqueRecipients.length > 0) {
-            await sendDocumentUploadNotificationEmail(
-              doc,
+            // Fire and forget - don't wait for email notifications
+            sendDocumentUploadNotificationEmail(
+              doc as ProjectDocument,
               user.name,
               project.name,
               uniqueRecipients,
               project.id
-            );
+            ).catch(err => console.error('Email notification failed:', err));
           }
-        }
+        });
+
+        // Send all notifications in parallel (fire and forget)
+        Promise.allSettled(notificationPromises).catch(err => console.error('Notification errors:', err));
         
         notifyProjectTeam('Files Added', `${user.name} uploaded ${createdDocIds.length} document(s) to "${project.name}"`, user.id, 'documents');
         
@@ -1226,8 +1253,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   };
 
   const handleApproveDocument = async (doc: ProjectDocument) => {
-    if (processingAction) return;
-    setProcessingAction(`approve-doc-${doc.id}`);
+    if (isProcessing(`approve-doc-${doc.id}`)) return;
+    startProcessing(`approve-doc-${doc.id}`);
     try {
       await updateDocument(project.id, doc.id, {
         approvalStatus: 'approved',
@@ -1268,13 +1295,13 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       console.error('Error approving document:', error);
       addNotification("Error", "Failed to approve document", "error");
     } finally {
-      setProcessingAction(null);
+      stopProcessing(`approve-doc-${doc.id}`);
     }
   };
 
   const handleRejectDocument = async (doc: ProjectDocument) => {
-    if (processingAction) return;
-    setProcessingAction(`reject-doc-${doc.id}`);
+    if (isProcessing(`reject-doc-${doc.id}`)) return;
+    startProcessing(`reject-doc-${doc.id}`);
     try {
       await updateDocument(project.id, doc.id, {
         approvalStatus: 'rejected',
@@ -1314,13 +1341,13 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       console.error('Error rejecting document:', error);
       addNotification("Error", "Failed to reject document", "error");
     } finally {
-      setProcessingAction(null);
+      stopProcessing(`reject-doc-${doc.id}`);
     }
   };
 
   const handleClientApproveDocument = async (doc: ProjectDocument) => {
-    if (processingAction) return;
-    setProcessingAction(`client-approve-doc-${doc.id}`);
+    if (isProcessing(`client-approve-doc-${doc.id}`)) return;
+    startProcessing(`client-approve-doc-${doc.id}`);
     try {
       await updateDocument(project.id, doc.id, {
         clientApprovalStatus: 'approved',
@@ -1356,13 +1383,13 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       console.error('Error approving document as client:', error);
       addNotification("Error", "Failed to approve document", "error");
     } finally {
-      setProcessingAction(null);
+      stopProcessing(`client-approve-doc-${doc.id}`);
     }
   };
 
   const handleClientRejectDocument = async (doc: ProjectDocument) => {
-    if (processingAction) return;
-    setProcessingAction(`client-reject-doc-${doc.id}`);
+    if (isProcessing(`client-reject-doc-${doc.id}`)) return;
+    startProcessing(`client-reject-doc-${doc.id}`);
     try {
       await updateDocument(project.id, doc.id, {
         clientApprovalStatus: 'rejected',
@@ -1398,7 +1425,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       console.error('Error rejecting document as client:', error);
       addNotification("Error", "Failed to reject document", "error");
     } finally {
-      setProcessingAction(null);
+      stopProcessing(`client-reject-doc-${doc.id}`);
     }
   };
 
@@ -1877,8 +1904,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
   // Handle approval for additional budgets
   const handleApproveAdditionalBudget = async (transactionId: string, approvalType: 'client' | 'admin', status: 'approved' | 'rejected') => {
-    if (processingAction) return;
-    setProcessingAction(`approve-budget-${transactionId}-${approvalType}-${status}`);
+    if (isProcessing(`approve-budget-${transactionId}-${approvalType}-${status}`)) return;
+    startProcessing(`approve-budget-${transactionId}-${approvalType}-${status}`);
     try {
       const key = approvalType === 'client' ? 'clientApprovalForAdditionalBudget' : 'adminApprovalForAdditionalBudget';
       
@@ -1964,14 +1991,14 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       console.error('Approval error:', error);
       addNotification("Error", "Unable to process approval. Please try again.", "error", undefined, project.id, project.name);
     } finally {
-      setProcessingAction(null);
+      stopProcessing(`approve-budget-${transactionId}-${approvalType}-${status}`);
     }
   };
 
   // Handle approval for received payments
   const handleApprovePayment = async (transactionId: string, approvalType: 'client' | 'admin', status: 'approved' | 'rejected') => {
-    if (processingAction) return;
-    setProcessingAction(`approve-payment-${transactionId}-${approvalType}-${status}`);
+    if (isProcessing(`approve-payment-${transactionId}-${approvalType}-${status}`)) return;
+    startProcessing(`approve-payment-${transactionId}-${approvalType}-${status}`);
     try {
       const key = approvalType === 'client' ? 'clientApprovalForPayment' : 'adminApprovalForPayment';
       
@@ -2028,13 +2055,13 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       console.error('Approval error:', error);
       addNotification("Error", "Unable to process approval. Please try again.", "error", undefined, project.id, project.name);
     } finally {
-      setProcessingAction(null);
+      stopProcessing(`approve-payment-${transactionId}-${approvalType}-${status}`);
     }
   };
 
   const handleApproveExpense = useCallback(async (transactionId: string, approvalType: 'client' | 'admin', isApproved: boolean) => {
-    if (processingAction) return;
-    setProcessingAction(`approve-expense-${transactionId}-${approvalType}-${isApproved}`);
+    if (isProcessing(`approve-expense-${transactionId}-${approvalType}-${isApproved}`)) return;
+    startProcessing(`approve-expense-${transactionId}-${approvalType}-${isApproved}`);
     const key = approvalType === 'client' ? 'clientApproved' : 'adminApproved';
     
     try {
@@ -2081,9 +2108,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       console.error('Approval error:', error);
       addNotification("Error", "Unable to process approval. Please try again.", "error", undefined, project.id, project.name);
     } finally {
-      setProcessingAction(null);
+      stopProcessing(`approve-expense-${transactionId}-${approvalType}-${isApproved}`);
     }
-  }, [project.id, addNotification, realTimeFinancials, currentFinancials, project.leadDesignerId, project.clientId, users, user.name, processingAction]);
+  }, [project.id, addNotification, realTimeFinancials, currentFinancials, project.leadDesignerId, project.clientId, users, user.name]);
 
   const handleDependencyChange = (dependencyId: string, isChecked: boolean) => {
      if (!editingTask || isTaskFrozen(editingTask.status)) return;
@@ -5492,7 +5519,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       )}
       {/* Invite Member Modal */}
       {isMemberModalOpen && createPortal(
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/50 z-[999] flex items-center justify-center p-4">
            <div className="bg-white rounded-xl shadow-xl w-full max-w-sm max-h-[90vh] flex flex-col animate-fade-in">
                <div className="p-4 md:p-6 border-b border-gray-100 flex-shrink-0">
                    <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2"><UserIcon className="w-5 h-5"/> Add to Project</h3>
@@ -5596,7 +5623,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
       {/* Financial Transaction Modal */}
       {isTransactionModalOpen && createPortal(
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/50 z-[999] flex items-center justify-center p-4">
            {/* ... (Same as before) ... */}
            <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col animate-fade-in">
               {/* Fixed Header */}
@@ -6342,7 +6369,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
       {/* Document Upload Modal */}
       {isDocModalOpen && createPortal(
-         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+         <div className="fixed inset-0 bg-black/50 z-[999] flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col animate-fade-in">
                {/* Fixed Header */}
                <div className="p-4 md:p-6 border-b border-gray-100 flex-shrink-0">
@@ -6483,7 +6510,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
       {/* Edit SharedWith Modal (Admin only) */}
       {isShareEditOpen && editingSharedDoc && createPortal(
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/50 z-[999] flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col animate-fade-in">
             <div className="p-4 md:p-6 border-b border-gray-100 flex-shrink-0">
               <h3 className="text-lg font-bold">Edit Shared Users</h3>
@@ -7144,7 +7171,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
       {/* Document Detail Modal with Comments */}
       {isDocDetailOpen && selectedDocument && createPortal(
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/50 z-[999] flex items-center justify-center p-4">
            <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl h-[90vh] flex flex-col animate-fade-in overflow-hidden">
               {/* Modal Header */}
               <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
@@ -7478,7 +7505,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
       {/* Vendor Billing Report Modal */}
       {selectedVendorForBilling && createPortal(
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/50 z-[999] flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col animate-fade-in overflow-hidden">
             {/* Header */}
             <div className="p-6 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
@@ -7884,7 +7911,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
       {/* Designer Details Modal */}
       {selectedDesignerForDetails && createPortal(
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/50 z-[999] flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col animate-fade-in overflow-hidden">
             {/* Header */}
             <div className="p-6 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
@@ -8044,7 +8071,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
       {/* Additional Budget Modal */}
       {isAdditionalBudgetModalOpen && createPortal(
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/50 z-[999] flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col animate-fade-in overflow-hidden">
             {/* Header */}
             <div className="p-4 md:p-6 border-b border-gray-200 bg-gradient-to-r from-emerald-50 to-green-50 flex-shrink-0">

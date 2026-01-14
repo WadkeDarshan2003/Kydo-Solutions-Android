@@ -43,6 +43,17 @@ export interface Tenant {
   isActive: boolean;
 }
 
+// Early definition - needed before header checks
+export interface Meeting {
+  id: string;
+  date: string;
+  title: string;
+  attendees: string[]; // List of user IDs
+  notes: string;
+  type: string; // Flexible meeting type (e.g., Discovery, Progress, Site Visit, etc.)
+  comments?: Comment[]; // Comments on the meeting
+}
+
 export interface User {
   id: string;
   name: string;
@@ -52,7 +63,7 @@ export interface User {
   phone?: string;
   avatar?: string;
   tenantId?: string;
-  tenantIds?: string[]; // For vendors: array of tenant IDs they can access (multi-tenant support)
+  tenantIds?: string[]; // For vendors/designers: array of tenant IDs they can access (multi-tenant support - can work across multiple firms)
   company?: string; // For vendors
   specialty?: string; // For designers/vendors
   authMethod?: 'email' | 'phone'; // Authentication method for vendors (email or phone-based OTP)
@@ -143,16 +154,6 @@ export interface Task {
     start: ApprovalFlow;
     completion: ApprovalFlow;
   };
-}
-
-export interface Meeting {
-  id: string;
-  date: string;
-  title: string;
-  attendees: string[]; // List of user IDs
-  notes: string;
-  type: string; // Flexible meeting type (e.g., Discovery, Progress, Site Visit, etc.)
-  comments?: Comment[]; // Comments on the meeting
 }
 
 export interface Timeline {

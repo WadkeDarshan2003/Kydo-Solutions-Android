@@ -94,6 +94,7 @@ export const createUserInFirebase = async (
     const normalizedPhone = (user.phone || '').replace(/\D/g, ''); // Keep only digits
     
     let finalTenantId = user.tenantId;
+    let finalTenantIds = user.tenantIds || [];
 
     // If this is an Admin and no tenantId is provided, create a new tenant document
     if (user.role === Role.ADMIN && !finalTenantId) {
@@ -113,6 +114,16 @@ export const createUserInFirebase = async (
       }
     }
 
+    // For Vendors/Designers: Use tenantIds array for multi-tenant support
+    // If tenantIds not provided, fallback to tenantId, then to firebaseUid
+    if ((user.role === Role.VENDOR || user.role === Role.DESIGNER) && finalTenantIds.length === 0) {
+      if (finalTenantId) {
+        finalTenantIds = [finalTenantId];
+      } else {
+        finalTenantIds = [firebaseUid];
+      }
+    }
+
     const userProfile: any = {
       id: firebaseUid,
       name: user.name,
@@ -123,6 +134,11 @@ export const createUserInFirebase = async (
       authMethod: user.authMethod || 'email',
       tenantId: finalTenantId || firebaseUid // Fallback to UID if still null
     };
+
+    // Add tenantIds for vendors and designers (multi-tenant support)
+    if ((user.role === Role.VENDOR || user.role === Role.DESIGNER) && finalTenantIds.length > 0) {
+      userProfile.tenantIds = finalTenantIds;
+    }
 
     // Add optional fields only if they exist
     if (user.company) userProfile.company = user.company;
