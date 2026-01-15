@@ -1,35 +1,51 @@
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { storage } from "./firebaseConfig";
-import { optimizeFile, formatFileSize, getCompressionStats } from "../utils/imageOptimization";
+import { formatFileSize } from "../utils/imageOptimization";
 
 /**
  * Uploads a file to Firebase Storage and returns the download URL.
- * Automatically optimizes images to save storage space.
+ * No optimization - direct upload to avoid Android compatibility issues.
  * @param file The file to upload
  * @param path The path in storage (e.g., 'projects/{projectId}/documents/{fileName}')
  * @returns Promise resolving to the download URL
  */
 export const uploadFile = async (file: File, path: string): Promise<string> => {
   try {
-    let fileToUpload = file;
-    let originalSize = file.size;
-
-    // Attempt to optimize file (especially images)
-    const optimizedFile = await optimizeFile(file);
-    if (optimizedFile) {
-      fileToUpload = optimizedFile;
-      const stats = getCompressionStats(originalSize, fileToUpload.size);
-      console.log(`📦 Image optimized: ${stats.originalSize} → ${stats.compressedSize} (saved ${stats.savedPercent})`);
+    if (!file || file.size === 0) {
+      throw new Error(`Invalid file: ${file.name}. File size is 0 bytes.`);
     }
 
+    console.log(`📤 Uploading file: ${file.name} (${formatFileSize(file.size)}) to ${path}`);
+
     const storageRef = ref(storage, path);
-    const snapshot = await uploadBytes(storageRef, fileToUpload);
+    
+    const metadata = {
+      contentType: file.type || 'application/octet-stream',
+      cacheControl: 'public, max-age=31536000'
+    };
+
+    const snapshot = await uploadBytes(storageRef, file, metadata);
+    
+    if (!snapshot || !snapshot.ref) {
+      throw new Error('Upload snapshot is invalid');
+    }
+
     const downloadURL = await getDownloadURL(snapshot.ref);
     
-    console.log(`✅ File uploaded: ${fileToUpload.name} (${formatFileSize(fileToUpload.size)})`);
+    if (!downloadURL) {
+      throw new Error('Failed to get download URL after upload');
+    }
+
+    console.log(`✅ File uploaded successfully: ${file.name} (${formatFileSize(file.size)})`);
+    console.log(`📥 Download URL: ${downloadURL}`);
+    
     return downloadURL;
   } catch (error) {
-    console.error("Error uploading file:", error);
+    console.error("❌ Error uploading file:", error);
+    if (error instanceof Error) {
+      console.error(`Error details: ${error.message}`);
+      console.error(`Stack: ${error.stack}`);
+    }
     throw error;
   }
 };

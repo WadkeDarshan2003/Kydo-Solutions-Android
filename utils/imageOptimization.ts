@@ -18,6 +18,16 @@ export const compressImage = async (
   quality: number = 0.8
 ): Promise<Blob> => {
   return new Promise((resolve, reject) => {
+    // Skip compression on Android if canvas might cause issues
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    const isCapacitor = !!(window as any).Capacitor;
+
+    if (isAndroid && isCapacitor && file.size < 1024 * 1024) {
+      console.log('⚠️ Skipping compression on Android for file:', file.name);
+      resolve(file.slice());
+      return;
+    }
+
     const reader = new FileReader();
 
     reader.onload = (event) => {
@@ -25,7 +35,6 @@ export const compressImage = async (
         const img = new Image();
 
         img.onload = () => {
-          // Calculate new dimensions maintaining aspect ratio
           let width = img.width;
           let height = img.height;
 
@@ -41,42 +50,69 @@ export const compressImage = async (
             }
           }
 
-          // Create canvas and compress
           const canvas = document.createElement('canvas');
           canvas.width = width;
           canvas.height = height;
 
           const ctx = canvas.getContext('2d');
           if (!ctx) {
-            reject(new Error('Failed to get canvas context'));
+            console.warn('Canvas context not available, using original file');
+            resolve(file.slice());
             return;
           }
 
-          ctx.drawImage(img, 0, 0, width, height);
+          try {
+            ctx.drawImage(img, 0, 0, width, height);
 
-          // Convert to blob with quality setting
-          canvas.toBlob(
-            (blob) => {
-              if (blob) {
-                resolve(blob);
-              } else {
-                reject(new Error('Canvas to blob conversion failed'));
-              }
-            },
-            file.type === 'image/png' ? 'image/png' : 'image/jpeg',
-            quality
-          );
+            const blobPromise = new Promise<Blob>((blobResolve, blobReject) => {
+              const timeout = setTimeout(() => {
+                console.warn('Canvas toBlob timed out, using original file');
+                blobReject(new Error('toBlob timeout'));
+              }, 5000);
+
+              canvas.toBlob(
+                (blob) => {
+                  clearTimeout(timeout);
+                  if (blob) {
+                    blobResolve(blob);
+                  } else {
+                    blobReject(new Error('Canvas to blob conversion failed'));
+                  }
+                },
+                file.type === 'image/png' ? 'image/png' : 'image/jpeg',
+                quality
+              );
+            });
+
+            blobPromise.then(resolve).catch(() => resolve(file.slice()));
+          } catch (canvasError) {
+            console.warn('Canvas error during compression, using original:', canvasError);
+            resolve(file.slice());
+          }
         };
 
-        img.onerror = () => reject(new Error('Failed to load image'));
+        img.onerror = () => {
+          console.warn('Image load failed, using original file');
+          resolve(file.slice());
+        };
         img.src = event.target?.result as string;
       } catch (error) {
-        reject(error);
+        console.warn('Error reading file for compression, using original:', error);
+        resolve(file.slice());
       }
     };
 
-    reader.onerror = () => reject(new Error('Failed to read file'));
-    reader.readAsDataURL(file);
+    reader.onerror = () => {
+      console.warn('FileReader error, using original file');
+      resolve(file.slice());
+    };
+    
+    try {
+      reader.readAsDataURL(file);
+    } catch (error) {
+      console.warn('Failed to readAsDataURL, using original file:', error);
+      resolve(file.slice());
+    }
   });
 };
 

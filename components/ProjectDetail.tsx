@@ -1012,77 +1012,138 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       try {
         const filesToUpload: File[] = selectedFiles.length > 0 ? selectedFiles : [{ name: newDoc.name } as File];
         const createdDocIds: string[] = [];
+        const failedUploads: string[] = [];
 
-        // PARALLEL: Upload all files simultaneously
-        const uploadPromises = filesToUpload.map(async (file, index) => {
+        // SEQUENTIAL: Upload files one by one to prevent overload on Android
+        const uploadResults = [];
+        
+        for (let index = 0; index < filesToUpload.length; index++) {
+          const file = filesToUpload[index];
           const fileName = file.name || newDoc.name;
           
-          // Determine type
-          let docType: 'image' | 'pdf' | 'other' = 'other';
-          if (file.type) {
-            if (file.type.startsWith('image/')) docType = 'image';
-            else if (file.type === 'application/pdf') docType = 'pdf';
-          }
-
-          // Generate URL: Upload to Firebase Storage for real file, or Local placeholder for name-only
-          let fileUrl = '';
-          
-          if (file instanceof File && file.size) {
-            try {
-              // Create a unique path for the file
-              const storagePath = `projects/${project.id}/documents/${Date.now()}_${index}_${file.name}`;
-              // Upload and get download URL
-              fileUrl = await uploadFile(file, storagePath);
-            } catch (uploadError) {
-              console.error("Upload failed, falling back to local preview:", uploadError);
-              // Fallback to blob URL if upload fails (though this won't persist well)
-              fileUrl = URL.createObjectURL(file);
-              addNotification('Warning', `Failed to upload "${fileName}" to storage. Using local preview.`, 'warning');
+          try {
+            console.log(`🔄 Processing file ${index + 1}/${filesToUpload.length}: ${fileName}`);
+            
+            // Validate file
+            if (!file || typeof file !== 'object') {
+              throw new Error(`Invalid file at index ${index}`);
             }
-          } else {
-            // Placeholder for name-only
-            fileUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgZmlsbD0iI2VmZWZlZiIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LXNpemU9IjI0IiBmaWxsPSIjYWFhIiBkb21pbmFudC1iYXNlbGluZT0ibWlkZGxlIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5QbGFjZWhvbGRlcjwvdGV4dD48L3N2Zz4=';
+
+            // Determine type
+            let docType: 'image' | 'pdf' | 'other' = 'other';
+            if (file.type) {
+              if (file.type.startsWith('image/')) docType = 'image';
+              else if (file.type === 'application/pdf') docType = 'pdf';
+            }
+
+            // Generate URL: Upload to Firebase Storage for real file
+            let fileUrl = '';
+            
+            if (file instanceof File && file.size > 0) {
+              try {
+                // Sanitize filename
+                const sanitizedName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+                const storagePath = `projects/${project.id}/documents/${Date.now()}_${index}_${sanitizedName}`;
+                
+                console.log(`📤 Uploading: ${fileName} (${file.size} bytes)`);
+                
+                // Upload with retry logic
+                let uploadSuccess = false;
+                let lastError: Error | null = null;
+                const maxRetries = 2;
+                
+                for (let retry = 0; retry <= maxRetries && !uploadSuccess; retry++) {
+                  try {
+                    fileUrl = await uploadFile(file, storagePath);
+                    uploadSuccess = true;
+                    console.log(`✅ Upload successful: ${fileName}`);
+                  } catch (uploadError) {
+                    lastError = uploadError as Error;
+                    console.warn(`⚠️ Upload attempt ${retry + 1}/${maxRetries + 1} failed:`, uploadError);
+                    
+                    if (retry < maxRetries) {
+                      // Wait before retry with exponential backoff
+                      await new Promise(resolve => setTimeout(resolve, 1000 * (retry + 1)));
+                    }
+                  }
+                }
+                
+                if (!uploadSuccess) {
+                  throw lastError || new Error(`Failed to upload ${fileName}`);
+                }
+              } catch (uploadError) {
+                const errorMsg = uploadError instanceof Error ? uploadError.message : String(uploadError);
+                console.error(`❌ Upload failed permanently for ${fileName}:`, uploadError);
+                failedUploads.push(fileName);
+                addNotification(
+                  'Upload Failed',
+                  `Failed to upload "${fileName}": ${errorMsg}`,
+                  'error',
+                  undefined,
+                  project.id,
+                  project.name
+                );
+                continue; // Skip this file and continue with others
+              }
+            } else if (file instanceof File && file.size === 0) {
+              const errorMsg = `File "${fileName}" is empty (0 bytes)`;
+              console.error(errorMsg);
+              failedUploads.push(fileName);
+              addNotification('Invalid File', errorMsg, 'error', undefined, project.id, project.name);
+              continue;
+            } else {
+              // Placeholder for name-only
+              fileUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgZmlsbD0iI2VmZWZlZiIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LXNpemU9IjI0IiBmaWxsPSIjYWFhIiBkb21pbmFudC1iYXNlbGluZT0ibWlkZGxlIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5QbGFjZWhvbGRlcjwvdGV4dD48L3N2Zz4=';
+            }
+
+            const doc: Omit<ProjectDocument, 'id'> = {
+              name: fileName,
+              type: docType, 
+              url: fileUrl,
+              uploadedBy: user.id,
+              uploadDate: new Date().toISOString(),
+              sharedWith: newDoc.sharedWith.length > 0 ? newDoc.sharedWith : [Role.ADMIN, Role.DESIGNER, Role.CLIENT],
+              approvalStatus: 'pending'
+            };
+            
+            // Save to Firestore subcollection
+            const createdDocId = await createDocument(project.id, doc);
+            createdDocIds.push(createdDocId);
+            
+            // Convert shared IDs to names for timeline
+            const sharedNames = newDoc.sharedWith.length > 0 
+              ? newDoc.sharedWith.map(id => {
+                  if (id === Role.ADMIN || id === Role.DESIGNER || id === Role.CLIENT) return id;
+                  const u = users.find(u => u.id === id);
+                  return u?.name || id;
+                }).join(', ')
+              : 'Admin, Designer, Client';
+
+            // Log timeline event
+            const now = new Date().toISOString();
+            logTimelineEvent(
+              project.id,
+              `Document Uploaded: ${fileName}`,
+              `${fileName} (${docType}) uploaded by ${user.name}. Shared with: ${sharedNames}`,
+              'completed',
+              now,
+              now
+            ).catch(err => console.error('Timeline logging failed:', err));
+
+            uploadResults.push({ createdDocId, doc, fileName });
+            
+          } catch (error) {
+            console.error(`Error processing file ${index}:`, error);
+            failedUploads.push(fileName);
           }
-
-          const doc = {
-            name: fileName,
-            type: docType, 
-            url: fileUrl,
-            uploadedBy: user.id,
-            uploadDate: new Date().toISOString(),
-            sharedWith: newDoc.sharedWith.length > 0 ? newDoc.sharedWith : [Role.ADMIN, Role.DESIGNER, Role.CLIENT],
-            approvalStatus: 'pending'
-          };
           
-          // Save to Firestore subcollection
-          const createdDocId = await createDocument(project.id, doc as Omit<ProjectDocument, 'id'>);
-          
-          // Convert shared IDs to names for timeline
-          const sharedNames = newDoc.sharedWith.length > 0 
-            ? newDoc.sharedWith.map(id => {
-                if (id === Role.ADMIN || id === Role.DESIGNER || id === Role.CLIENT) return id;
-                const user = users.find(u => u.id === id);
-                return user?.name || id;
-              }).join(', ')
-            : 'Admin, Designer, Client';
+          // Small delay between uploads to prevent overload
+          if (index < filesToUpload.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        }
 
-          // Log timeline event (parallel, don't await)
-          const now = new Date().toISOString();
-          logTimelineEvent(
-            project.id,
-            `Document Uploaded: ${fileName}`,
-            `${fileName} (${docType}) uploaded by ${user.name}. Shared with: ${sharedNames}`,
-            'completed',
-            now,
-            now
-          ).catch(err => console.error('Timeline logging failed:', err));
-
-          return { createdDocId, doc, fileName };
-        });
-
-        // Wait for all uploads and saves to complete
-        const uploadResults = await Promise.all(uploadPromises);
-        uploadResults.forEach(result => createdDocIds.push(result.createdDocId));
+        let updatedProject = { ...project };
 
         // If attaching to a task, update the task with all document IDs
         if (newDoc.attachToTaskId && createdDocIds.length > 0) {
@@ -1114,24 +1175,38 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
               const updatedTasks = currentTasks.map(t => 
                 t.id === targetTask.id ? {...t, documents: updatedDocArray} : t
               );
-              onUpdateProject({
-                ...project,
+              
+              updatedProject = {
+                ...updatedProject,
                 tasks: updatedTasks
-              });
+              };
             }
           }
         }
 
-        const log = logActivity('Document Uploaded', `Uploaded ${createdDocIds.length} document(s)`);
-        onUpdateProject({
-            ...project,
-            activityLog: [log, ...(project.activityLog || [])]
-        });
+        const log = logActivity('Document Uploaded', `Uploaded ${createdDocIds.length} document(s)${failedUploads.length > 0 ? ` (${failedUploads.length} failed)` : ''}`);
+        updatedProject = {
+            ...updatedProject,
+            activityLog: [log, ...(updatedProject.activityLog || [])]
+        };
+
+        onUpdateProject(updatedProject);
+        
+        // Only show success notification if at least one document was uploaded
+        if (createdDocIds.length > 0) {
+          addNotification(
+            "Success",
+            `${createdDocIds.length} document(s) uploaded successfully${failedUploads.length > 0 ? `. Failed: ${failedUploads.join(', ')}` : ''}.`,
+            "success",
+            undefined,
+            project.id,
+            project.name
+          );
+        }
         
         // PARALLEL: Send notifications to all shared users simultaneously
         const notificationPromises = uploadResults.map(async (result) => {
-          const doc = result.doc;
-          doc.id = result.createdDocId;
+          const doc: ProjectDocument = { ...result.doc, id: result.createdDocId };
 
           // Get recipients - admins and users in sharedWith
           const recipients: User[] = [];
@@ -4248,17 +4323,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                 className="p-2 bg-white rounded-full text-green-600 hover:bg-green-50" 
                                 title="Approve"
                                 onClick={() => handleApproveDocument(doc)}
-                                disabled={processingAction === `approve-doc-${doc.id}`}
+                                disabled={isProcessing(`approve-doc-${doc.id}`)}
                               >
-                                 {processingAction === `approve-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <Check className="w-4 h-4" />}
+                                 {isProcessing(`approve-doc-${doc.id}`) ? <Spinner size="md" color="currentColor" /> : <Check className="w-4 h-4" />}
                               </button>
                               <button 
                                 className="p-2 bg-white rounded-full text-red-600 hover:bg-red-50" 
                                 title="Reject"
                                 onClick={() => handleRejectDocument(doc)}
-                                disabled={processingAction === `reject-doc-${doc.id}`}
+                                disabled={isProcessing(`reject-doc-${doc.id}`)}
                               >
-                                 {processingAction === `reject-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <X className="w-4 h-4" />}
+                                 {isProcessing(`reject-doc-${doc.id}`) ? <Spinner size="md" color="currentColor" /> : <X className="w-4 h-4" />}
                               </button>
                             </div>
                           )}
@@ -4268,17 +4343,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                 className="p-2 bg-white rounded-full text-green-600 hover:bg-green-50" 
                                 title="Approve as Client"
                                 onClick={() => handleClientApproveDocument(doc)}
-                                disabled={processingAction === `client-approve-doc-${doc.id}`}
+                                disabled={isProcessing(`client-approve-doc-${doc.id}`)}
                               >
-                                 {processingAction === `client-approve-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <Check className="w-4 h-4" />}
+                                 {isProcessing(`client-approve-doc-${doc.id}`) ? <Spinner size="md" color="currentColor" /> : <Check className="w-4 h-4" />}
                               </button>
                               <button 
                                 className="p-2 bg-white rounded-full text-red-600 hover:bg-red-50" 
                                 title="Reject as Client"
                                 onClick={() => handleClientRejectDocument(doc)}
-                                disabled={processingAction === `client-reject-doc-${doc.id}`}
+                                disabled={isProcessing(`client-reject-doc-${doc.id}`)}
                               >
-                                 {processingAction === `client-reject-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <X className="w-4 h-4" />}
+                                 {isProcessing(`client-reject-doc-${doc.id}`) ? <Spinner size="md" color="currentColor" /> : <X className="w-4 h-4" />}
                               </button>
                             </div>
                           )}
@@ -4640,17 +4715,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                       onClick={() => handleApproveAdditionalBudget(fin.id, 'client', 'approved')}
                                       className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Approve"
-                                      disabled={processingAction === `approve-budget-${fin.id}-client-approved`}
+                                      disabled={isProcessing(`approve-budget-${fin.id}-client-approved`)}
                                     >
-                                      {processingAction === `approve-budget-${fin.id}-client-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                      {isProcessing(`approve-budget-${fin.id}-client-approved`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                     </button>
                                     <button 
                                       onClick={() => handleApproveAdditionalBudget(fin.id, 'client', 'rejected')}
                                       className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Reject"
-                                      disabled={processingAction === `approve-budget-${fin.id}-client-rejected`}
+                                      disabled={isProcessing(`approve-budget-${fin.id}-client-rejected`)}
                                     >
-                                      {processingAction === `approve-budget-${fin.id}-client-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                      {isProcessing(`approve-budget-${fin.id}-client-rejected`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                     </button>
                                   </div>
                                 )}
@@ -4676,17 +4751,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                       onClick={() => handleApproveAdditionalBudget(fin.id, 'admin', 'approved')}
                                       className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Approve"
-                                      disabled={processingAction === `approve-budget-${fin.id}-admin-approved`}
+                                      disabled={isProcessing(`approve-budget-${fin.id}-admin-approved`)}
                                     >
-                                      {processingAction === `approve-budget-${fin.id}-admin-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                      {isProcessing(`approve-budget-${fin.id}-admin-approved`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                     </button>
                                     <button 
                                       onClick={() => handleApproveAdditionalBudget(fin.id, 'admin', 'rejected')}
                                       className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Reject"
-                                      disabled={processingAction === `approve-budget-${fin.id}-admin-rejected`}
+                                      disabled={isProcessing(`approve-budget-${fin.id}-admin-rejected`)}
                                     >
-                                      {processingAction === `approve-budget-${fin.id}-admin-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                      {isProcessing(`approve-budget-${fin.id}-admin-rejected`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                     </button>
                                   </div>
                                 )}
@@ -4714,17 +4789,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                       onClick={() => handleApprovePayment(fin.id, 'client', 'approved')}
                                       className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Confirm payment"
-                                      disabled={processingAction === `approve-payment-${fin.id}-client-approved`}
+                                      disabled={isProcessing(`approve-payment-${fin.id}-client-approved`)}
                                     >
-                                      {processingAction === `approve-payment-${fin.id}-client-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                      {isProcessing(`approve-payment-${fin.id}-client-approved`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                     </button>
                                     <button 
                                       onClick={() => handleApprovePayment(fin.id, 'client', 'rejected')}
                                       className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Dispute payment"
-                                      disabled={processingAction === `approve-payment-${fin.id}-client-rejected`}
+                                      disabled={isProcessing(`approve-payment-${fin.id}-client-rejected`)}
                                     >
-                                      {processingAction === `approve-payment-${fin.id}-client-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                      {isProcessing(`approve-payment-${fin.id}-client-rejected`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                     </button>
                                   </div>
                                 )}
@@ -4750,17 +4825,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                       onClick={() => handleApprovePayment(fin.id, 'admin', 'approved')}
                                       className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Approve payment"
-                                      disabled={processingAction === `approve-payment-${fin.id}-admin-approved`}
+                                      disabled={isProcessing(`approve-payment-${fin.id}-admin-approved`)}
                                     >
-                                      {processingAction === `approve-payment-${fin.id}-admin-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                      {isProcessing(`approve-payment-${fin.id}-admin-approved`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                     </button>
                                     <button 
                                       onClick={() => handleApprovePayment(fin.id, 'admin', 'rejected')}
                                       className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Reject payment"
-                                      disabled={processingAction === `approve-payment-${fin.id}-admin-rejected`}
+                                      disabled={isProcessing(`approve-payment-${fin.id}-admin-rejected`)}
                                     >
-                                      {processingAction === `approve-payment-${fin.id}-admin-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                      {isProcessing(`approve-payment-${fin.id}-admin-rejected`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                     </button>
                                   </div>
                                 )}
@@ -4788,17 +4863,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                       onClick={() => handleApproveExpense(fin.id, 'client', true)}
                                       className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Approve expense"
-                                      disabled={processingAction === `approve-expense-${fin.id}-client-true`}
+                                      disabled={isProcessing(`approve-expense-${fin.id}-client-true`)}
                                     >
-                                      {processingAction === `approve-expense-${fin.id}-client-true` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                      {isProcessing(`approve-expense-${fin.id}-client-true`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                     </button>
                                     <button 
                                       onClick={() => handleApproveExpense(fin.id, 'client', false)}
                                       className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Reject expense"
-                                      disabled={processingAction === `approve-expense-${fin.id}-client-false`}
+                                      disabled={isProcessing(`approve-expense-${fin.id}-client-false`)}
                                     >
-                                      {processingAction === `approve-expense-${fin.id}-client-false` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                      {isProcessing(`approve-expense-${fin.id}-client-false`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                     </button>
                                   </div>
                                 )}
@@ -4824,17 +4899,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                       onClick={() => handleApproveExpense(fin.id, 'admin', true)}
                                       className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Approve expense"
-                                      disabled={processingAction === `approve-expense-${fin.id}-admin-true`}
+                                      disabled={isProcessing(`approve-expense-${fin.id}-admin-true`)}
                                     >
-                                      {processingAction === `approve-expense-${fin.id}-admin-true` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                      {isProcessing(`approve-expense-${fin.id}-admin-true`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                     </button>
                                     <button 
                                       onClick={() => handleApproveExpense(fin.id, 'admin', false)}
                                       className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Reject expense"
-                                      disabled={processingAction === `approve-expense-${fin.id}-admin-false`}
+                                      disabled={isProcessing(`approve-expense-${fin.id}-admin-false`)}
                                     >
-                                      {processingAction === `approve-expense-${fin.id}-admin-false` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                      {isProcessing(`approve-expense-${fin.id}-admin-false`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                     </button>
                                   </div>
                                 )}
@@ -7663,17 +7738,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                                         onClick={() => handleApprovePayment(fin.id, 'client', 'approved')}
                                                         className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Confirm payment"
-                                                        disabled={processingAction === `approve-payment-${fin.id}-client-approved`}
+                                                        disabled={isProcessing(`approve-payment-${fin.id}-client-approved`)}
                                                       >
-                                                        {processingAction === `approve-payment-${fin.id}-client-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                                        {isProcessing(`approve-payment-${fin.id}-client-approved`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                                       </button>
                                                       <button 
                                                         onClick={() => handleApprovePayment(fin.id, 'client', 'rejected')}
                                                         className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Dispute payment"
-                                                        disabled={processingAction === `approve-payment-${fin.id}-client-rejected`}
+                                                        disabled={isProcessing(`approve-payment-${fin.id}-client-rejected`)}
                                                       >
-                                                        {processingAction === `approve-payment-${fin.id}-client-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                                        {isProcessing(`approve-payment-${fin.id}-client-rejected`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                                       </button>
                                                     </div>
                                                   )}
@@ -7699,17 +7774,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                                         onClick={() => handleApprovePayment(fin.id, 'admin', 'approved')}
                                                         className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Approve payment"
-                                                        disabled={processingAction === `approve-payment-${fin.id}-admin-approved`}
+                                                        disabled={isProcessing(`approve-payment-${fin.id}-admin-approved`)}
                                                       >
-                                                        {processingAction === `approve-payment-${fin.id}-admin-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                                        {isProcessing(`approve-payment-${fin.id}-admin-approved`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                                       </button>
                                                       <button 
                                                         onClick={() => handleApprovePayment(fin.id, 'admin', 'rejected')}
                                                         className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Reject payment"
-                                                        disabled={processingAction === `approve-payment-${fin.id}-admin-rejected`}
+                                                        disabled={isProcessing(`approve-payment-${fin.id}-admin-rejected`)}
                                                       >
-                                                        {processingAction === `approve-payment-${fin.id}-admin-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                                        {isProcessing(`approve-payment-${fin.id}-admin-rejected`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                                       </button>
                                                     </div>
                                                   )}
@@ -7737,17 +7812,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                                         onClick={() => handleApproveExpense(fin.id, 'client', true)}
                                                         className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Approve expense"
-                                                        disabled={processingAction === `approve-expense-${fin.id}-client-true`}
+                                                        disabled={isProcessing(`approve-expense-${fin.id}-client-true`)}
                                                       >
-                                                        {processingAction === `approve-expense-${fin.id}-client-true` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                                        {isProcessing(`approve-expense-${fin.id}-client-true`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                                       </button>
                                                       <button 
                                                         onClick={() => handleApproveExpense(fin.id, 'client', false)}
                                                         className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Reject expense"
-                                                        disabled={processingAction === `approve-expense-${fin.id}-client-false`}
+                                                        disabled={isProcessing(`approve-expense-${fin.id}-client-false`)}
                                                       >
-                                                        {processingAction === `approve-expense-${fin.id}-client-false` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                                        {isProcessing(`approve-expense-${fin.id}-client-false`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                                       </button>
                                                     </div>
                                                   )}
@@ -7773,17 +7848,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                                         onClick={() => handleApproveExpense(fin.id, 'admin', true)}
                                                         className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Approve expense"
-                                                        disabled={processingAction === `approve-expense-${fin.id}-admin-true`}
+                                                        disabled={isProcessing(`approve-expense-${fin.id}-admin-true`)}
                                                       >
-                                                        {processingAction === `approve-expense-${fin.id}-admin-true` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                                        {isProcessing(`approve-expense-${fin.id}-admin-true`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                                       </button>
                                                       <button 
                                                         onClick={() => handleApproveExpense(fin.id, 'admin', false)}
                                                         className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Reject expense"
-                                                        disabled={processingAction === `approve-expense-${fin.id}-admin-false`}
+                                                        disabled={isProcessing(`approve-expense-${fin.id}-admin-false`)}
                                                       >
-                                                        {processingAction === `approve-expense-${fin.id}-admin-false` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                                        {isProcessing(`approve-expense-${fin.id}-admin-false`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                                       </button>
                                                     </div>
                                                   )}
@@ -8318,17 +8393,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                 className="p-2 bg-white rounded-full text-green-600 hover:bg-green-50" 
                                 title="Approve"
                                 onClick={() => handleApproveDocument(doc)}
-                                disabled={processingAction === `approve-doc-${doc.id}`}
+                                disabled={isProcessing(`approve-doc-${doc.id}`)}
                               >
-                                 {processingAction === `approve-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <Check className="w-4 h-4" />}
+                                 {isProcessing(`approve-doc-${doc.id}`) ? <Spinner size="md" color="currentColor" /> : <Check className="w-4 h-4" />}
                               </button>
                               <button 
                                 className="p-2 bg-white rounded-full text-red-600 hover:bg-red-50" 
                                 title="Reject"
                                 onClick={() => handleRejectDocument(doc)}
-                                disabled={processingAction === `reject-doc-${doc.id}`}
+                                disabled={isProcessing(`reject-doc-${doc.id}`)}
                               >
-                                 {processingAction === `reject-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <X className="w-4 h-4" />}
+                                 {isProcessing(`reject-doc-${doc.id}`) ? <Spinner size="md" color="currentColor" /> : <X className="w-4 h-4" />}
                               </button>
                             </div>
                           )}
@@ -8535,3 +8610,5 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 };
 
 export default ProjectDetail;
+
+
